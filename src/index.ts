@@ -1,0 +1,399 @@
+import { sendTextMessage, sendAudioChunk, sendVideoFrame } from './dataInput.js';
+import { AudioStreamer } from './audioOutput.js';
+import { AudioRecorder } from './audioInput.js';
+
+export interface ParameterProperty {
+  type: string;
+  description?: string;
+  required?: boolean;
+  enum?: string[];
+  [key: string]: any;
+}
+
+export interface ToolParameters {
+  type?: 'OBJECT' | 'object' | string;
+  properties?: Record<string, ParameterProperty>;
+  required?: string[];
+  [key: string]: any;
+}
+
+export interface LiveTool {
+  name: string;
+  description: string;
+  parameters?: ToolParameters | Record<string, ParameterProperty>;
+  behavior?: 'BLOCKING' | 'NON_BLOCKING' | string;
+  handler: (args: Record<string, any>) => any | Promise<any>;
+}
+
+export interface GeminiLiveOptions {
+  prompt?: string;
+  tools?: LiveTool | LiveTool[];
+  enableLogs?: boolean;
+  enableSessionResumption?: boolean;
+  enableCompression?: boolean;
+}
+
+export class GeminiLive {
+  private apiKey: string;
+  private model: string;
+  private useEphemeralToken: boolean;
+  private ephemeralToken: string;
+  private prompt: string;
+  private toolHandlers: { [key: string]: (args: Record<string, any>) => any | Promise<any> } = {};
+  private toolDeclarations: any[] = [];
+  private enableLogs: boolean;
+  private enableSessionResumption: boolean;
+  private enableCompression: boolean;
+  private sessionHandle?: string;
+  private websocket?: WebSocket;
+
+  private WS_URL!: string;
+  private audioStreamer: AudioStreamer;
+  private audioRecorder: AudioRecorder;
+
+  public get isConnected(): boolean {
+    return this.websocket?.readyState === WebSocket.OPEN;
+  }
+
+  public get currentSessionHandle(): string | undefined {
+    return this.sessionHandle;
+  }
+
+  constructor(
+    apiKey: string,
+    model: string,
+    useEphemeralToken: boolean = false,
+    ephemeralToken: string,
+    prompt: string = 'You are a helpful assistant.',
+    tools: LiveTool | LiveTool[] = [],
+    enableLogs: boolean = false,
+    enableSessionResumption: boolean = true,
+    enableCompression: boolean = true
+  ) {
+    this.apiKey = apiKey;
+    this.model = model;
+    this.ephemeralToken = ephemeralToken;
+    this.useEphemeralToken = useEphemeralToken;
+    this.prompt = prompt;
+    this.enableLogs = enableLogs;
+    this.enableSessionResumption = enableSessionResumption;
+    this.enableCompression = enableCompression;
+    this.audioStreamer = new AudioStreamer(enableLogs);
+    this.audioRecorder = new AudioRecorder(enableLogs);
+
+    this.registerTools(tools);
+  }
+
+  /**
+   * Automatically normalizes user-supplied parameters into the standard
+   * OpenAPI schema required by Gemini Live WebSocket setup.
+   */
+  private normalizeParameters(rawParams?: Record<string, any>): Record<string, any> {
+    if (!rawParams || Object.keys(rawParams).length === 0) {
+      return {
+        type: 'OBJECT',
+        properties: {}
+      };
+    }
+
+    const properties: Record<string, any> = {};
+    const required: string[] = Array.isArray(rawParams.required) ? [...rawParams.required] : [];
+    const sourceProps = rawParams.properties || rawParams;
+
+    for (const [key, val] of Object.entries(sourceProps)) {
+      if (key === 'type' || key === 'required' || typeof val !== 'object' || !val) continue;
+
+      const prop = val as ParameterProperty;
+
+      properties[key] = {
+        type: (prop.type || 'string').toUpperCase(),
+        description: prop.description || `The ${key} parameter`,
+        ...(prop.enum ? { enum: prop.enum } : {})
+      };
+
+      if (prop.required === true && !required.includes(key)) {
+        required.push(key);
+      }
+    }
+
+    return {
+      type: 'OBJECT',
+      properties,
+      ...(required.length > 0 ? { required } : {})
+    };
+  }
+
+  private registerTools(tools: LiveTool | LiveTool[]) {
+    if (!tools) return;
+    const toolList = Array.isArray(tools) ? tools : [tools];
+
+    for (const tool of toolList) {
+      if (!tool || !tool.name || typeof tool.handler !== 'function') continue;
+
+      const normalizedParams = this.normalizeParameters(tool.parameters);
+
+      this.toolDeclarations.push({
+        name: tool.name,
+        description: tool.description || `Calls the ${tool.name} function`,
+        parameters: normalizedParams,
+        ...(tool.behavior ? { behavior: tool.behavior } : {})
+      });
+
+      this.toolHandlers[tool.name] = tool.handler;
+    }
+  }
+
+  private log(...args: any[]) {
+    if (this.enableLogs) {
+      console.log(...args);
+    }
+  }
+
+  private warn(...args: any[]) {
+    if (this.enableLogs) {
+      console.warn(...args);
+    }
+  }
+
+  private error(...args: any[]) {
+    if (this.enableLogs) {
+      console.error(...args);
+    }
+  }
+
+  private reconnectAttempts: number = 0;
+  private maxReconnectAttempts: number = 5;
+  private reconnectTimer?: any;
+  private isExplicitDisconnect: boolean = false;
+
+  public onStatusChange?: (status: string, details?: any) => void;
+
+  connect() {
+    this.isExplicitDisconnect = false;
+    this.WS_URL = this.useEphemeralToken ?
+      `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained?access_token=${this.ephemeralToken}` :
+      `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${this.apiKey}`;
+
+    if (this.reconnectAttempts > 0) {
+      this.onStatusChange?.(`Reconnecting (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
+    } else {
+      this.onStatusChange?.('Connecting...');
+    }
+
+    this.websocket = new WebSocket(this.WS_URL);
+
+    this.websocket.onopen = () => {
+      this.log('WebSocket Connected');
+      this.reconnectAttempts = 0;
+      this.onStatusChange?.('Connected');
+
+      // 1. Send the initial configuration
+      const setupMessage: any = {
+        setup: {
+          model: `models/${this.model}`,
+          generationConfig: {
+            responseModalities: ['AUDIO']
+          },
+          systemInstruction: {
+            parts: [{ text: this.prompt }]
+          }
+        }
+      };
+
+      // Add session resumption (with previous handle if reconnecting)
+      if (this.enableSessionResumption) {
+        setupMessage.setup.sessionResumption = this.sessionHandle
+          ? { handle: this.sessionHandle }
+          : {};
+      }
+
+      // Add context window compression for extended/unlimited duration
+      if (this.enableCompression) {
+        setupMessage.setup.contextWindowCompression = {
+          slidingWindow: {}
+        };
+      }
+
+      if (this.toolDeclarations.length > 0) {
+        setupMessage.setup.tools = [
+          { functionDeclarations: this.toolDeclarations }
+        ];
+      }
+
+      this.websocket?.send(JSON.stringify(setupMessage));
+      this.log('Configuration sent with setup:', setupMessage.setup);
+    };
+
+    this.websocket.onmessage = async (event) => {
+      let data = event.data;
+      if (data instanceof Blob) {
+        data = await data.text();
+      }
+      const response = JSON.parse(data);
+      this.log('Received:', response);
+
+      // Handle Session Resumption Handle updates
+      if (response.sessionResumptionUpdate) {
+        const update = response.sessionResumptionUpdate;
+        if (update.resumable && update.newHandle) {
+          this.sessionHandle = update.newHandle;
+          this.log('Updated session resumption handle:', this.sessionHandle);
+        }
+      }
+
+      // Handle Server GoAway warning (approaching connection reset)
+      if (response.goAway) {
+        this.log('Received GoAway signal from server. Time left:', response.goAway.timeLeft);
+        this.onStatusChange?.('Connection expiring soon', response.goAway);
+      }
+
+      if (response.serverContent) {
+        const serverContent = response.serverContent;
+        // Receiving Audio
+        if (serverContent.modelTurn?.parts) {
+          for (const part of serverContent.modelTurn.parts) {
+            if (part.inlineData) {
+              const audioData = part.inlineData.data; // Base64 encoded string
+              this.audioStreamer.playAudioChunk(audioData);
+              this.log(`Received audio data (base64 len: ${audioData.length})`);
+            }
+          }
+        }
+
+        // Receiving Text Transcriptions
+        if (serverContent.inputTranscription) {
+          this.log('User:', serverContent.inputTranscription.text);
+        }
+        if (serverContent.outputTranscription) {
+          this.log('Gemini:', serverContent.outputTranscription.text);
+        }
+      }
+
+      // Handling Tool Calls
+      if (response.toolCall) {
+        this.handleToolCall(response.toolCall);
+      }
+    };
+
+    this.websocket.onerror = (error) => {
+      this.error('WebSocket Error:', error);
+      this.onStatusChange?.('Error', error);
+    };
+
+    this.websocket.onclose = (event) => {
+      this.log('WebSocket Closed', { code: event.code, reason: event.reason, wasClean: event.wasClean });
+      this.onStatusChange?.('Disconnected', { code: event.code, reason: event.reason });
+
+      if (!this.isExplicitDisconnect) {
+        this.scheduleReconnect();
+      }
+    };
+  }
+
+  private scheduleReconnect() {
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      this.warn('Max reconnection attempts reached.');
+      this.onStatusChange?.('Reconnect Failed');
+      return;
+    }
+
+    this.reconnectAttempts++;
+    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 8000);
+    this.log(`Reconnecting in ${delay}ms...`);
+
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(() => {
+      this.connect();
+    }, delay);
+  }
+
+  public disconnect() {
+    this.isExplicitDisconnect = true;
+    clearTimeout(this.reconnectTimer);
+    this.stopRecording();
+    if (this.websocket) {
+      this.websocket.close(1000, 'Client closed connection');
+      this.websocket = undefined;
+    }
+    this.onStatusChange?.('Disconnected');
+  }
+
+  private async handleToolCall(toolCall: any) {
+    const functionResponses: any[] = [];
+    for (const fc of toolCall.functionCalls) {
+      // 1. Execute the function locally (sync or async)
+      let result;
+      try {
+        const toolFunc = this.toolHandlers[fc.name];
+        if (toolFunc) {
+          result = await toolFunc(fc.args || {});
+        } else {
+          this.warn(`Tool ${fc.name} not found.`);
+          result = { error: `Tool ${fc.name} not found` };
+        }
+      } catch (e: any) {
+        this.error(`Error executing tool ${fc.name}:`, e);
+        result = { error: e.message };
+      }
+
+      // 2. Prepare the response
+      functionResponses.push({
+        name: fc.name,
+        id: fc.id,
+        response: typeof result === 'object' && result !== null ? result : { result }
+      });
+    }
+
+    // 3. Send the tool response back to the session
+    if (this.websocket?.readyState === WebSocket.OPEN) {
+      const toolResponseMessage = {
+        toolResponse: {
+          functionResponses: functionResponses
+        }
+      };
+      this.websocket.send(JSON.stringify(toolResponseMessage));
+      this.log('Sent tool response:', toolResponseMessage);
+    } else {
+      this.warn('WebSocket not open to send tool response.');
+    }
+  }
+
+  public sendText(text: string) {
+    if (this.websocket) {
+      sendTextMessage(this.websocket, text, this.enableLogs);
+    } else {
+      this.warn('WebSocket is not initialized.');
+    }
+  }
+
+  // public sendAudio(chunk: Buffer | any) {
+  //   if (this.websocket) {
+  //     sendAudioChunk(this.websocket, chunk, this.enableLogs);
+  //   } else {
+  //     this.warn('WebSocket is not initialized.');
+  //   }
+  // }
+
+  public sendVideo(frame: Buffer | any, mimeType: string = 'image/jpeg') {
+    if (this.websocket) {
+      sendVideoFrame(this.websocket, frame, mimeType, this.enableLogs);
+    } else {
+      this.warn('WebSocket is not initialized.');
+    }
+  }
+
+  public async startRecording(stream: MediaStream, onVolumeChange?: (volume: number) => void) {
+    if (!this.websocket) {
+      this.warn('WebSocket is not initialized. Call connect() first.');
+      return;
+    }
+    if (onVolumeChange) {
+      this.audioRecorder.onVolumeChange = onVolumeChange;
+    }
+    await this.audioRecorder.startRecording(stream, this.websocket);
+  }
+
+  public stopRecording() {
+    this.audioRecorder.stopRecording();
+  }
+}

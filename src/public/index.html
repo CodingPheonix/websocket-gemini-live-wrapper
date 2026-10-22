@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemini Live API Wrapper Test</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            max-width: 800px;
+            margin: 2rem auto;
+            padding: 1rem;
+        }
+
+        .controls {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        input {
+            padding: 0.5rem;
+            flex: 1;
+        }
+
+        button {
+            padding: 0.5rem 1rem;
+            cursor: pointer;
+        }
+
+        #volume {
+            width: 100%;
+            height: 10px;
+            background: #eee;
+            margin-top: 1rem;
+        }
+
+        #volume-bar {
+            height: 100%;
+            background: #4caf50;
+            width: 0%;
+            transition: width 0.1s;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Gemini Live Voice Test</h1>
+
+    <div class="controls">
+        <input type="password" id="apiKey" placeholder="Enter Gemini API Key">
+        <button id="connectBtn">Connect</button>
+        <button id="disconnectBtn" disabled>Disconnect</button>
+    </div>
+
+    <div class="controls">
+        <button id="startBtn" disabled>Start Recording (Mic)</button>
+        <button id="stopBtn" disabled>Stop Recording</button>
+    </div>
+
+    <div id="status">Disconnected</div>
+    <div id="volume">
+        <div id="volume-bar"></div>
+    </div>
+
+    <script type="module" src="./script.js"></script>
+</body>
+
+</html>

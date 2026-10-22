@@ -1,0 +1,52 @@
+{
+  "name": "@codingpheonix/gemini-live-wrapper",
+  "version": "1.0.0",
+  "description": "This is a wrapper that takes audio and video inputs and uses it in gemini live using ephemeral tokens.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "gemini",
+    "gemini-live",
+    "google-genai",
+    "websocket",
+    "audio",
+    "video",
+    "typescript",
+    "ai"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepack": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CodingPheonix/websocket-gemini-live-wrapper.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/CodingPheonix/websocket-gemini-live-wrapper/issues"
+  },
+  "homepage": "https://github.com/CodingPheonix/websocket-gemini-live-wrapper#readme",
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "nodemon": "^3.1.14",
+    "ts-node": "^10.9.2",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@google/genai": "^2.27.0"
+  }
+}
