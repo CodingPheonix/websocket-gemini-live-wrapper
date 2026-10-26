@@ -146,19 +146,37 @@ Create an instance of `GeminiLive` with your configuration.
 import { GeminiLive } from '@codingpheonix/gemini-live-wrapper';
 
 const geminiLive = new GeminiLive(
-    apiKey,  // Google Gemini API Key
-    'gemini-3.8-live',   // Live Model ID 
-    false,   // useEphemeralToken (set true if using client-side ephemeral token)
-    '',  // Ephemeral token string (if useEphemeralToken is true)
-    'You are a helpful assistant. If the user asks about the weather or temperature, use the getRandomTemperature tool.', // System instruction / prompt
-    getRandomTemperature,  // Single tool or array of tools
-    true  // enableLogs (verbose logging)
+    apiKey,                                     // 1. apiKey (Required)
+    'gemini-3.1-flash-live-preview',            // 2. model (Required)
+    false,                                      // 3. useEphemeralToken (Optional, default: false)
+    '',                                         // 4. ephemeralToken (Optional, pass "" if not used)
+    'You are a helpful assistant.',             // 5. prompt (Optional, default: 'You are a helpful assistant.')
+    getRandomTemperature,                      // 6. tools (Optional, default: [])
+    true,                                       // 7. enableLogs (Optional, default: false)
+    true,                                       // 8. enableSessionResumption (Optional, default: true)
+    true                                        // 9. enableCompression (Optional, default: true)
 );
 ```
 
-**Description:**
-- Configures the WebSocket endpoint, audio streamer (for model output), audio recorder (for input capture), system prompt, and registered tool declarations.
-- Optional parameters like `enableSessionResumption` (default `true`) and `enableCompression` (default `true`) can also be passed to maintain sessions over network resets.
+#### Constructor Parameters
+
+| # | Parameter | Type | Required / Optional | Default Value | Description |
+|---|---|---|---|---|---|
+| 1 | `apiKey` | `string` | **Required** | *(None)* | Your Google Gemini API Key. Can be passed as `""` if using ephemeral tokens. |
+| 2 | `model` | `string` | **Required** | *(None)* | The Gemini Live model ID (e.g., `'gemini-3.1-flash-live-preview'`). |
+| 3 | `useEphemeralToken` | `boolean` | **Optional** | `false` | Set to `true` when connecting from untrusted client browsers with a short-lived token instead of exposing your API key. |
+| 4 | `ephemeralToken` | `string` | **Optional** | *(None)* | The ephemeral access token string. Required only when `useEphemeralToken` is `true`. Otherwise pass `""`. |
+| 5 | `prompt` | `string` | **Optional** | `'You are a helpful assistant.'` | System instructions and persona for Gemini. |
+| 6 | `tools` | `LiveTool \| LiveTool[]` | **Optional** | `[]` | A single tool definition or an array of tool objects for client-side function calling. |
+| 7 | `enableLogs` | `boolean` | **Optional** | `false` | Enables verbose console logging for debugging connection events, frame transfers, and tool executions. |
+| 8 | `enableSessionResumption` | `boolean` | **Optional** | `true` | Persists session resumption handles (`sessionResumptionUpdate`) and context across unexpected network drops and reconnect attempts. |
+| 9 | `enableCompression` | `boolean` | **Optional** | `true` | Enables Gemini's context window compression for extended multi-turn conversations. |
+
+#### Useful Instance Properties & Getters
+
+- **`geminiLive.isConnected`** (`boolean`): Returns `true` if the WebSocket connection is open.
+- **`geminiLive.currentSessionHandle`** (`string | undefined`): Returns the current session resumption token provided by Gemini.
+- **`geminiLive.registeredTools`** (`any[]`): Returns the list of normalized OpenAPI tool declarations sent to Gemini.
 
 ---
 
@@ -244,47 +262,36 @@ await geminiLive.startRecording(stream, (volume) => {
 
 ### Step 7: Stream Video Frames (Camera or Screen Share)
 
-Stream video or screen frames alongside audio using `.sendVideo()`. Frames are typically sampled using an HTML `<canvas>` at ~1 FPS (recommended rate for Gemini Live API).
+Stream video or screen share frames alongside audio with a single method call: `geminiLive.startVideoStream(stream)`. All canvas element creation, video scaling, periodic frame sampling (~1 FPS), and track listeners are managed automatically by the wrapper.
 
 ```javascript
-// Example: Capturing webcam or screen share stream
-const videoStream = await navigator.mediaDevices.getUserMedia({
-    video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 15 } }
+// 1. Acquire camera stream (or screen share via getDisplayMedia)
+const stream = await navigator.mediaDevices.getUserMedia({
+    video: {
+        width: { ideal: 640 },
+        height: { ideal: 480 },
+        frameRate: { ideal: 15 }
+    }
 });
 
-// Or for screen sharing:
-// const videoStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+// 2. Hand the stream to the wrapper — the wrapper handles everything else!
+geminiLive.startVideoStream(stream);
 
-const videoElement = document.createElement('video');
-videoElement.srcObject = videoStream;
-videoElement.autoplay = true;
-videoElement.playsInline = true;
-
-const canvas = document.createElement('canvas');
-const ctx = canvas.getContext('2d');
-
-// Stream frames periodically (e.g. 1 frame every second)
-const intervalId = setInterval(() => {
-    if (!geminiLive || videoElement.readyState < 2) return;
-
-    // Scale down to max 640px width for low latency
-    const scale = Math.min(1, 640 / (videoElement.videoWidth || 640));
-    canvas.width = (videoElement.videoWidth || 640) * scale;
-    canvas.height = (videoElement.videoHeight || 480) * scale;
-
-    ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
-
-    // Get JPEG base64 Data URL and send frame
-    const base64DataUrl = canvas.toDataURL('image/jpeg', 0.6);
-    geminiLive.sendVideo(base64DataUrl, 'image/jpeg');
-}, 1000);
+// Optional: listen when the user stops screen sharing from browser UI
+geminiLive.onVideoStreamEnded = () => {
+    console.log('Video stream ended');
+};
 ```
 
 **Description:**
-- **`geminiLive.sendVideo(frame, mimeType)`**:
-  - `frame`: Accepts a base64 string (including data URL prefix `data:image/jpeg;base64,...`), `Buffer`, `Uint8Array`, or `ArrayBuffer`.
-  - `mimeType`: MIME format string, e.g. `'image/jpeg'` (default) or `'image/webp'`.
-  - Sends real-time visual context to Gemini inside the WebSocket `realtimeInput.video` payload so Gemini can see and converse about what the camera or screen displays.
+- **`geminiLive.startVideoStream(stream, options?)`**:
+  - `stream`: Any active `MediaStream` (from `getUserMedia` or `getDisplayMedia`).
+  - `options` (optional):
+    - `fps`: Frame rate (default: `1` FPS, optimal for Gemini Live).
+    - `maxWidth`: Maximum resolution width before downscaling (default: `640` px).
+    - `quality`: Image compression quality (default: `0.6`).
+    - `mimeType`: Image MIME type (default: `'image/jpeg'`).
+  - Automatically renders frames onto an internal canvas, encodes to base64, pipes to the active WebSocket session, and monitors track end events.
 
 ---
 
@@ -296,14 +303,13 @@ Pause or stop audio and video streams cleanly.
 // Stop audio recording
 geminiLive.stopRecording();
 
-// Stop video interval and release camera/screen tracks
-clearInterval(intervalId);
-videoStream.getTracks().forEach((track) => track.stop());
+// Stop video streaming (stops frame sampling and releases hardware tracks)
+geminiLive.stopVideoStream();
 ```
 
 **Description:**
-- Disconnects audio processing nodes and stops media hardware tracks without closing the WebSocket connection.
-- The session remains active, allowing the model to finish speaking or answer follow-up questions.
+- **`geminiLive.stopVideoStream(stopTracks = true)`**: Clears the internal timer, unhooks track listeners, and releases media device hardware tracks.
+- Leaves the WebSocket session alive so the assistant can continue conversing.
 
 ---
 

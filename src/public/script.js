@@ -14,58 +14,21 @@ const startCameraBtn = document.getElementById('startCameraBtn');
 const startScreenBtn = document.getElementById('startScreenBtn');
 const stopVideoBtn = document.getElementById('stopVideoBtn');
 const videoPreview = document.getElementById('videoPreview');
-const videoCanvas = document.getElementById('videoCanvas');
 
-let videoStream = null;
-let videoIntervalId = null;
-
-function stopVideoStream() {
-    if (videoIntervalId) {
-        clearInterval(videoIntervalId);
-        videoIntervalId = null;
+function updateVideoUI(isStreaming, stream = null) {
+    if (isStreaming && stream) {
+        videoPreview.srcObject = stream;
+        videoPreview.style.display = 'block';
+        startCameraBtn.disabled = true;
+        startScreenBtn.disabled = true;
+        stopVideoBtn.disabled = false;
+    } else {
+        videoPreview.srcObject = null;
+        videoPreview.style.display = 'none';
+        startCameraBtn.disabled = !geminiLive || !geminiLive.isConnected;
+        startScreenBtn.disabled = !geminiLive || !geminiLive.isConnected;
+        stopVideoBtn.disabled = true;
     }
-    if (videoStream) {
-        videoStream.getTracks().forEach((track) => track.stop());
-        videoStream = null;
-    }
-    videoPreview.srcObject = null;
-    videoPreview.style.display = 'none';
-    if (startCameraBtn) startCameraBtn.disabled = !geminiLive || !geminiLive.isConnected;
-    if (startScreenBtn) startScreenBtn.disabled = !geminiLive || !geminiLive.isConnected;
-    if (stopVideoBtn) stopVideoBtn.disabled = true;
-}
-
-function startStreamingVideo(stream) {
-    videoStream = stream;
-    videoPreview.srcObject = stream;
-    videoPreview.style.display = 'block';
-
-    const ctx = videoCanvas.getContext('2d');
-
-    // Stream video frames at ~1 FPS (recommended rate for Gemini Live API)
-    videoIntervalId = setInterval(() => {
-        if (!geminiLive || videoPreview.readyState < 2) return;
-
-        // Resize down to 640px width max for low latency
-        const scale = Math.min(1, 640 / (videoPreview.videoWidth || 640));
-        videoCanvas.width = (videoPreview.videoWidth || 640) * scale;
-        videoCanvas.height = (videoPreview.videoHeight || 480) * scale;
-
-        ctx.drawImage(videoPreview, 0, 0, videoCanvas.width, videoCanvas.height);
-
-        // Convert canvas image to JPEG base64 and send via sendVideo
-        const base64DataUrl = videoCanvas.toDataURL('image/jpeg', 0.6);
-        geminiLive.sendVideo(base64DataUrl, 'image/jpeg');
-    }, 1000);
-
-    // If the user stops screen sharing from browser UI
-    stream.getVideoTracks()[0].addEventListener('ended', () => {
-        stopVideoStream();
-    });
-
-    if (startCameraBtn) startCameraBtn.disabled = true;
-    if (startScreenBtn) startScreenBtn.disabled = true;
-    if (stopVideoBtn) stopVideoBtn.disabled = false;
 }
 
 connectBtn.addEventListener('click', () => {
@@ -117,19 +80,21 @@ connectBtn.addEventListener('click', () => {
             disconnectBtn.disabled = true;
             startBtn.disabled = true;
             stopBtn.disabled = true;
-            startCameraBtn.disabled = true;
-            startScreenBtn.disabled = true;
-            stopVideoBtn.disabled = true;
+            updateVideoUI(false);
             volumeBar.style.width = '0%';
-            stopVideoStream();
         }
+    };
+
+    // Callback when user stops screen share from browser controls
+    geminiLive.onVideoStreamEnded = () => {
+        updateVideoUI(false);
     };
 
     geminiLive.connect();
 });
 
 disconnectBtn.addEventListener('click', () => {
-    stopVideoStream();
+    updateVideoUI(false);
     if (geminiLive) {
         geminiLive.disconnect();
     }
@@ -169,6 +134,7 @@ stopBtn.addEventListener('click', () => {
     volumeBar.style.width = '0%';
 });
 
+// Supplying the stream is the only user task:
 startCameraBtn.addEventListener('click', async () => {
     try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -178,7 +144,8 @@ startCameraBtn.addEventListener('click', async () => {
                 frameRate: { ideal: 15 }
             }
         });
-        startStreamingVideo(stream);
+        geminiLive.startVideoStream(stream);
+        updateVideoUI(true, stream);
     } catch (err) {
         console.error('Camera error:', err);
         statusEl.textContent = 'Camera access denied';
@@ -192,7 +159,8 @@ startScreenBtn.addEventListener('click', async () => {
                 cursor: 'always'
             }
         });
-        startStreamingVideo(stream);
+        geminiLive.startVideoStream(stream);
+        updateVideoUI(true, stream);
     } catch (err) {
         console.error('Screen share error:', err);
         statusEl.textContent = 'Screen share cancelled or denied';
@@ -200,5 +168,6 @@ startScreenBtn.addEventListener('click', async () => {
 });
 
 stopVideoBtn.addEventListener('click', () => {
-    stopVideoStream();
+    geminiLive.stopVideoStream();
+    updateVideoUI(false);
 });
