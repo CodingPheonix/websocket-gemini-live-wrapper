@@ -13,8 +13,9 @@ To integrate and work with this library, follow this structured pattern:
 3. **Handle Connection Lifecycle & Status Events**: Attach listener callbacks (`onStatusChange`) to track live connection states.
 4. **Establish the WebSocket Connection**: Initiate the session with `.connect()`.
 5. **Capture & Stream Microphone Audio**: Acquire microphone access using `navigator.mediaDevices.getUserMedia` and pipe it via `.startRecording()`.
-6. **Stop Audio Streaming**: End microphone capture cleanly via `.stopRecording()`.
-7. **Disconnect & Teardown**: Gracefully close WebSocket connections and audio contexts via `.disconnect()`.
+6. **Capture & Stream Video Frames (Camera / Screen)**: Capture webcam or screen share frames via `<canvas>` or `Buffer` and pipe them via `.sendVideo()`.
+7. **Stop Audio & Video Streaming**: End microphone capture cleanly via `.stopRecording()` and stop your video capture loop.
+8. **Disconnect & Teardown**: Gracefully close WebSocket connections and audio contexts via `.disconnect()`.
 
 ---
 
@@ -22,6 +23,7 @@ To integrate and work with this library, follow this structured pattern:
 
 - **Real-Time Bidirectional Streaming**: Establishes a direct WebSocket connection to Google's Gemini Multimodal Live API.
 - **Microphone Capture & Resampling (`AudioRecorder`)**: Automatically captures user audio at 16kHz mono PCM and streams chunks directly over WebSocket. Includes a live volume calculation callback.
+- **Video Streaming (`sendVideo`)**: Easily send camera or screen share snapshots (JPEG, WebP) directly to Gemini over WebSocket at ~1 FPS using base64 data URLs, Buffers, or Uint8Arrays.
 - **Audio Output Playback (`AudioStreamer`)**: Buffers and seamlessly streams 24kHz PCM audio received from the Gemini model in real-time.
 - **Automatic Client-Side Function / Tool Calling**: Registers tools, automatically normalizes parameter schemas to OpenAPI specifications, executes matching local handlers (sync or async), and sends return values back to the model.
 - **Session Resumption & Reconnection**: Tracks session resumption tokens (`sessionResumptionUpdate`) and context window compression for long-running sessions, with automatic exponential backoff reconnection.
@@ -35,9 +37,10 @@ Below is the complete implementation workflow showing the code and a detailed ex
 
 ### Step 1: Define Tools (Optional Function Calling)
 
-Define any client-side functions the model can call when answering user queries.
+Define any client-side functions the model can call when answering user queries. You can declare scalar parameters (e.g. `string`, `number`, `boolean`) as well as `array` parameters with `items`.
 
 ```javascript
+// Example 1: Scalar parameters
 const getRandomTemperature = {
     name: 'getRandomTemperature',
     description: 'Returns a random temperature for a given city or location for testing.',
@@ -58,13 +61,80 @@ const getRandomTemperature = {
         };
     }
 };
+
+// Example 2: Array parameters with items schema
+const saveRecommendations = {
+    name: 'saveRecommendations',
+    description: 'Saves action steps and treatment advice into the session.',
+    parameters: {
+        suggestions: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'List of actionable recommendations or steps',
+            required: true
+        },
+        priority: {
+            type: 'string',
+            enum: ['LOW', 'MEDIUM', 'HIGH'],
+            description: 'Priority level of recommendations'
+        }
+    },
+    handler: async (args) => {
+        console.log('Received suggestions:', args.suggestions);
+        return { success: true, count: args.suggestions?.length || 0 };
+    }
+};
+
+// Example 3: Nested objects, arrays of objects, & numeric/format constraints
+const recordDiagnosis = {
+    name: 'recordDiagnosis',
+    description: 'Records plant health analysis with geo-location and treatment items.',
+    parameters: {
+        location: {
+            type: 'object',
+            description: 'Geo-coordinates of the field',
+            properties: {
+                latitude: { type: 'number', minimum: -90, maximum: 90, required: true },
+                longitude: { type: 'number', minimum: -180, maximum: 180, required: true },
+                accuracy: { type: 'string', enum: ['HIGH', 'MEDIUM', 'LOW'] }
+            },
+            required: true
+        },
+        treatments: {
+            type: 'array',
+            description: 'List of recommended treatments',
+            items: {
+                type: 'object',
+                description: 'Treatment item',
+                properties: {
+                    productName: { type: 'string', required: true },
+                    dosageMl: { type: 'number', minimum: 0, required: true }
+                }
+            }
+        },
+        timestamp: {
+            type: 'string',
+            format: 'date-time',
+            description: 'ISO 8601 recording timestamp'
+        }
+    },
+    handler: async (args) => {
+        return { success: true, savedAt: args.timestamp };
+    }
+};
 ```
 
 **Description:**
 - **`name`**: The unique identifier Gemini uses to invoke this function.
 - **`description`**: Clear prompt description helping Gemini decide when to call the tool.
-- **`parameters`**: The expected input schema. The wrapper automatically normalizes this into OpenAPI schema format.
-- **`handler`**: The local callback executed when Gemini triggers this function. The wrapper automatically captures the returned object and sends it back to Gemini via a `toolResponse` message.
+- **`parameters`**: The expected input schema. The wrapper automatically normalizes this into OpenAPI schema format (`type: 'OBJECT'`) recursively:
+  - **Scalar types**: Supports `'string'`, `'number'`, `'integer'`, `'boolean'`.
+  - **Nested Objects**: Supports nested `type: 'object'` schemas with their own `properties` and `required` fields.
+  - **Arrays & Arrays of Objects**: For `type: 'array'`, supports scalar elements (`items: { type: 'string' }` or shorthand `items: 'string'`) as well as nested objects (`items: { type: 'object', properties: { ... } }`).
+  - **Constraints & Formats**: Preserves `minimum`, `maximum`, `format` (e.g. `'date-time'`, `'email'`), `pattern` (regex), `minLength`, `maxLength`, `minItems`, `maxItems`, `enum`, and `required` flags.
+  - **Values & Metadata**: Supports `nullable: true`, `default` values, and `example`/`examples` to guide model adherence.
+  - **Defensive Fallback**: If `type: 'array'` is passed without an explicit `items` field, the wrapper automatically provides `{ type: 'STRING' }` so Gemini's WebSocket schema validation never fails.
+- **`handler`**: The local callback (synchronous or `async`) executed when Gemini triggers this function. The wrapper automatically captures the returned object and sends it back to Gemini via a `toolResponse` message.
 
 ---
 
@@ -172,21 +242,72 @@ await geminiLive.startRecording(stream, (volume) => {
 
 ---
 
-### Step 7: Stop Recording Audio
+### Step 7: Stream Video Frames (Camera or Screen Share)
 
-Pause or stop audio capture while preserving the WebSocket session.
+Stream video or screen frames alongside audio using `.sendVideo()`. Frames are typically sampled using an HTML `<canvas>` at ~1 FPS (recommended rate for Gemini Live API).
 
 ```javascript
-geminiLive.stopRecording();
+// Example: Capturing webcam or screen share stream
+const videoStream = await navigator.mediaDevices.getUserMedia({
+    video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 15 } }
+});
+
+// Or for screen sharing:
+// const videoStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+
+const videoElement = document.createElement('video');
+videoElement.srcObject = videoStream;
+videoElement.autoplay = true;
+videoElement.playsInline = true;
+
+const canvas = document.createElement('canvas');
+const ctx = canvas.getContext('2d');
+
+// Stream frames periodically (e.g. 1 frame every second)
+const intervalId = setInterval(() => {
+    if (!geminiLive || videoElement.readyState < 2) return;
+
+    // Scale down to max 640px width for low latency
+    const scale = Math.min(1, 640 / (videoElement.videoWidth || 640));
+    canvas.width = (videoElement.videoWidth || 640) * scale;
+    canvas.height = (videoElement.videoHeight || 480) * scale;
+
+    ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+
+    // Get JPEG base64 Data URL and send frame
+    const base64DataUrl = canvas.toDataURL('image/jpeg', 0.6);
+    geminiLive.sendVideo(base64DataUrl, 'image/jpeg');
+}, 1000);
 ```
 
 **Description:**
-- Disconnects the `AudioContext` and processing nodes, stopping audio capture and data transmission over the WebSocket.
-- The WebSocket connection remains active, allowing the model to finish speaking or await future input.
+- **`geminiLive.sendVideo(frame, mimeType)`**:
+  - `frame`: Accepts a base64 string (including data URL prefix `data:image/jpeg;base64,...`), `Buffer`, `Uint8Array`, or `ArrayBuffer`.
+  - `mimeType`: MIME format string, e.g. `'image/jpeg'` (default) or `'image/webp'`.
+  - Sends real-time visual context to Gemini inside the WebSocket `realtimeInput.video` payload so Gemini can see and converse about what the camera or screen displays.
 
 ---
 
-### Step 8: Disconnect the Session
+### Step 8: Stop Streaming Audio & Video
+
+Pause or stop audio and video streams cleanly.
+
+```javascript
+// Stop audio recording
+geminiLive.stopRecording();
+
+// Stop video interval and release camera/screen tracks
+clearInterval(intervalId);
+videoStream.getTracks().forEach((track) => track.stop());
+```
+
+**Description:**
+- Disconnects audio processing nodes and stops media hardware tracks without closing the WebSocket connection.
+- The session remains active, allowing the model to finish speaking or answer follow-up questions.
+
+---
+
+### Step 9: Disconnect the Session
 
 Gracefully terminate the entire live session when finished.
 
@@ -196,7 +317,7 @@ geminiLive.disconnect();
 
 **Description:**
 - Signals explicit user disconnection (`code 1000`).
-- Stops any active recording, halts audio output playback, cleans up active timers, and closes the WebSocket connection.
+- Stops active recording, halts audio playback, cleans up timers, and closes the WebSocket connection.
 
 ---
 
@@ -206,13 +327,6 @@ geminiLive.disconnect();
 You can send text queries directly to the active session:
 ```javascript
 geminiLive.sendText("Hello Gemini! Can you hear me?");
-```
-
-### Streaming Video Frames
-You can stream video / canvas snapshots (e.g., JPEG or WebP) alongside audio:
-```javascript
-// buffer: ArrayBuffer or Uint8Array representing image bytes
-geminiLive.sendVideo(buffer, 'image/jpeg');
 ```
 
 ---

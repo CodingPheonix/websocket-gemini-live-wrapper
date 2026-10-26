@@ -1,6 +1,6 @@
 {
   "name": "@codingpheonix/gemini-live-wrapper",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "description": "This is a wrapper that takes audio and video inputs and uses it in gemini live using ephemeral tokens.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -27,6 +27,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "test": "vitest run",
     "prepack": "npm run build"
   },
   "repository": {
@@ -44,7 +45,8 @@
     "@types/node": "^26.6.4",
     "nodemon": "^3.1.14",
     "ts-node": "^10.9.2",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
   },
   "dependencies": {
     "@google/genai": "^2.27.0"

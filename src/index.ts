@@ -5,8 +5,22 @@ import { AudioRecorder } from './audioInput.js';
 export interface ParameterProperty {
   type: string;
   description?: string;
-  required?: boolean;
+  required?: boolean | string[];
   enum?: string[];
+  format?: string;
+  minimum?: number;
+  maximum?: number;
+  nullable?: boolean;
+  minItems?: number;
+  maxItems?: number;
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  default?: any;
+  example?: any;
+  examples?: any[];
+  properties?: Record<string, ParameterProperty>;
+  items?: ParameterProperty | { type: string; [key: string]: any } | string;
   [key: string]: any;
 }
 
@@ -59,6 +73,10 @@ export class GeminiLive {
     return this.sessionHandle;
   }
 
+  public get registeredTools(): any[] {
+    return this.toolDeclarations;
+  }
+
   constructor(
     apiKey: string,
     model: string,
@@ -86,9 +104,10 @@ export class GeminiLive {
 
   /**
    * Automatically normalizes user-supplied parameters into the standard
-   * OpenAPI schema required by Gemini Live WebSocket setup.
+   * OpenAPI schema required by Gemini Live WebSocket setup (supports recursion
+   * for nested objects and arrays of objects).
    */
-  private normalizeParameters(rawParams?: Record<string, any>): Record<string, any> {
+  public normalizeParameters(rawParams?: Record<string, any>): Record<string, any> {
     if (!rawParams || Object.keys(rawParams).length === 0) {
       return {
         type: 'OBJECT',
@@ -104,12 +123,7 @@ export class GeminiLive {
       if (key === 'type' || key === 'required' || typeof val !== 'object' || !val) continue;
 
       const prop = val as ParameterProperty;
-
-      properties[key] = {
-        type: (prop.type || 'string').toUpperCase(),
-        description: prop.description || `The ${key} parameter`,
-        ...(prop.enum ? { enum: prop.enum } : {})
-      };
+      properties[key] = this.normalizeProperty(key, prop);
 
       if (prop.required === true && !required.includes(key)) {
         required.push(key);
@@ -121,6 +135,91 @@ export class GeminiLive {
       properties,
       ...(required.length > 0 ? { required } : {})
     };
+  }
+
+  /**
+   * Helper to normalize an individual property or schema node recursively.
+   */
+  private normalizeProperty(key: string, prop: Record<string, any>, isItem: boolean = false): Record<string, any> {
+    const propType = (prop.type || 'string').toUpperCase();
+    const result: Record<string, any> = {
+      type: propType
+    };
+
+    if (prop.description) {
+      result.description = prop.description;
+    } else if (!isItem) {
+      result.description = `The ${key} parameter`;
+    }
+
+    if (prop.enum) {
+      result.enum = prop.enum;
+    }
+    if (prop.format) {
+      result.format = prop.format;
+    }
+    if (typeof prop.minimum === 'number') {
+      result.minimum = prop.minimum;
+    }
+    if (typeof prop.maximum === 'number') {
+      result.maximum = prop.maximum;
+    }
+    if (typeof prop.nullable === 'boolean') {
+      result.nullable = prop.nullable;
+    }
+    if (typeof prop.minItems === 'number') {
+      result.minItems = prop.minItems;
+    }
+    if (typeof prop.maxItems === 'number') {
+      result.maxItems = prop.maxItems;
+    }
+    if (typeof prop.minLength === 'number') {
+      result.minLength = prop.minLength;
+    }
+    if (typeof prop.maxLength === 'number') {
+      result.maxLength = prop.maxLength;
+    }
+    if (typeof prop.pattern === 'string') {
+      result.pattern = prop.pattern;
+    }
+    if (prop.default !== undefined) {
+      result.default = prop.default;
+    }
+    if (prop.example !== undefined) {
+      result.example = prop.example;
+    }
+    if (Array.isArray(prop.examples)) {
+      result.examples = prop.examples;
+    }
+
+    // 1. Nested OBJECT schema: normalize nested properties
+    if (propType === 'OBJECT' || prop.properties) {
+      result.type = 'OBJECT';
+      const nestedNormalized = this.normalizeParameters({
+        properties: prop.properties || {},
+        required: prop.required
+      });
+      result.properties = nestedNormalized.properties;
+      if (nestedNormalized.required && nestedNormalized.required.length > 0) {
+        result.required = nestedNormalized.required;
+      }
+    }
+
+    // 2. ARRAY schema: normalize items schema
+    if (propType === 'ARRAY') {
+      if (prop.items) {
+        if (typeof prop.items === 'string') {
+          result.items = { type: prop.items.toUpperCase() };
+        } else if (typeof prop.items === 'object') {
+          result.items = this.normalizeProperty('item', prop.items, true);
+        }
+      } else {
+        // Fallback default to prevent schema validation failure
+        result.items = { type: 'STRING' };
+      }
+    }
+
+    return result;
   }
 
   private registerTools(tools: LiveTool | LiveTool[]) {
@@ -374,7 +473,7 @@ export class GeminiLive {
   //   }
   // }
 
-  public sendVideo(frame: Buffer | any, mimeType: string = 'image/jpeg') {
+  public sendVideo(frame: Buffer | string | Uint8Array | ArrayBuffer | any, mimeType: string = 'image/jpeg') {
     if (this.websocket) {
       sendVideoFrame(this.websocket, frame, mimeType, this.enableLogs);
     } else {

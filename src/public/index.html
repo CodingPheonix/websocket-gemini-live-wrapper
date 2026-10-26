@@ -42,11 +42,25 @@
             width: 0%;
             transition: width 0.1s;
         }
+        .video-container {
+            margin-top: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        video {
+            width: 100%;
+            max-width: 480px;
+            background: #000;
+            border-radius: 8px;
+            display: none;
+        }
     </style>
 </head>
 
 <body>
-    <h1>Gemini Live Voice Test</h1>
+    <h1>Gemini Live Voice & Video Test</h1>
 
     <div class="controls">
         <input type="password" id="apiKey" placeholder="Enter Gemini API Key">
@@ -59,12 +73,23 @@
         <button id="stopBtn" disabled>Stop Recording</button>
     </div>
 
+    <div class="controls">
+        <button id="startCameraBtn" disabled>Start Camera</button>
+        <button id="startScreenBtn" disabled>Share Screen</button>
+        <button id="stopVideoBtn" disabled>Stop Video</button>
+    </div>
+
     <div id="status">Disconnected</div>
     <div id="volume">
         <div id="volume-bar"></div>
     </div>
 
-    <script type="module" src="./script.js"></script>
+    <div class="video-container">
+        <video id="videoPreview" autoplay playsinline muted></video>
+        <canvas id="videoCanvas" style="display: none;"></canvas>
+    </div>
+
+    <script type="module" src="/src/public/script.js"></script>
 </body>
 
 </html>
