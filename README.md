@@ -12,18 +12,21 @@ To integrate and work with this library, follow this structured pattern:
 2. **Initialize `GeminiLive`**: Instantiate the wrapper with your credentials (API key or ephemeral token), model name, instructions, and tools.
 3. **Handle Connection Lifecycle & Status Events**: Attach listener callbacks (`onStatusChange`) to track live connection states.
 4. **Establish the WebSocket Connection**: Initiate the session with `.connect()`.
-5. **Capture & Stream Microphone Audio**: Acquire microphone access using `navigator.mediaDevices.getUserMedia` and pipe it via `.startRecording()`.
-6. **Capture & Stream Video Frames (Camera / Screen)**: Capture webcam or screen share frames via `<canvas>` or `Buffer` and pipe them via `.sendVideo()`.
-7. **Stop Audio & Video Streaming**: End microphone capture cleanly via `.stopRecording()` and stop your video capture loop.
-8. **Disconnect & Teardown**: Gracefully close WebSocket connections and audio contexts via `.disconnect()`.
+5. **Connect & Stream Media**:
+   - **i.** Connect and Stream Microphone Audio (`.startRecording()`)
+   - **ii.** Disconnect Microphone Audio (`.stopRecording()`)
+   - **iii.** Connect and Stream Camera Video (`.startVideoStream()`)
+   - **iv.** Connect and Stream Screen Share (`.startVideoStream()`)
+   - **v.** Disconnect Video / Screen Stream (`.stopVideoStream()`)
+6. **Disconnect & Teardown**: Gracefully close WebSocket connections and release audio/video resources via `.disconnect()`.
 
 ---
 
 ## What It Does
 
 - **Real-Time Bidirectional Streaming**: Establishes a direct WebSocket connection to Google's Gemini Multimodal Live API.
-- **Microphone Capture & Resampling (`AudioRecorder`)**: Automatically captures user audio at 16kHz mono PCM and streams chunks directly over WebSocket. Includes a live volume calculation callback.
-- **Video Streaming (`sendVideo`)**: Easily send camera or screen share snapshots (JPEG, WebP) directly to Gemini over WebSocket at ~1 FPS using base64 data URLs, Buffers, or Uint8Arrays.
+- **Microphone Capture & Resampling (`AudioRecorder`)**: Automatically captures user audio at 16kHz mono PCM and streams chunks directly over WebSocket. Includes a live volume calculation callback and automatic hardware device release.
+- **Automated Video Streaming (`VideoStreamer` / `startVideoStream`)**: Pass any camera or screen share `MediaStream`—the wrapper handles canvas creation, downscaling, JPEG encoding, periodic frame transmission (~1 FPS), and track termination automatically.
 - **Audio Output Playback (`AudioStreamer`)**: Buffers and seamlessly streams 24kHz PCM audio received from the Gemini model in real-time.
 - **Automatic Client-Side Function / Tool Calling**: Registers tools, automatically normalizes parameter schemas to OpenAPI specifications, executes matching local handlers (sync or async), and sends return values back to the model.
 - **Session Resumption & Reconnection**: Tracks session resumption tokens (`sessionResumptionUpdate`) and context window compression for long-running sessions, with automatic exponential backoff reconnection.
@@ -218,12 +221,19 @@ geminiLive.connect();
 
 ---
 
-### Step 5: Acquire User Microphone Stream
+### Step 5: Connect Media
 
-Request audio access from the browser with recommended real-time settings.
+Once connected, you can stream audio and video to Gemini simultaneously or independently.
+
+---
+
+#### i. Connect and Stream Microphone Audio
+
+Acquire microphone access from the browser with recommended real-time settings and stream PCM chunks to Gemini while monitoring real-time volume:
 
 ```javascript
-const stream = await navigator.mediaDevices.getUserMedia({
+// 1. Acquire microphone stream
+const audioStream = await navigator.mediaDevices.getUserMedia({
     audio: {
         echoCancellation: true,
         noiseSuppression: true,
@@ -232,20 +242,9 @@ const stream = await navigator.mediaDevices.getUserMedia({
         channelCount: 1
     }
 });
-```
 
-**Description:**
-- Requests a single-channel (mono) audio stream from the client microphone.
-- Enables browser-level acoustic echo cancellation (`echoCancellation`), noise suppression (`noiseSuppression`), and hardware auto gain control (`autoGainControl`) for optimal voice clarity and interruption handling.
-
----
-
-### Step 6: Start Recording and Streaming Audio
-
-Begin capturing audio, streaming PCM chunks to Gemini, and monitoring real-time volume.
-
-```javascript
-await geminiLive.startRecording(stream, (volume) => {
+// 2. Stream audio to Gemini
+await geminiLive.startRecording(audioStream, (volume) => {
     // volume is a normalized RMS floating-point value (e.g., 0.0 to 1.0)
     console.log('Input volume:', volume);
 });
@@ -260,13 +259,27 @@ await geminiLive.startRecording(stream, (volume) => {
 
 ---
 
-### Step 7: Stream Video Frames (Camera or Screen Share)
+#### ii. Disconnect Microphone Audio
 
-Stream video or screen share frames alongside audio with a single method call: `geminiLive.startVideoStream(stream)`. All canvas element creation, video scaling, periodic frame sampling (~1 FPS), and track listeners are managed automatically by the wrapper.
+Pause or stop audio capture without closing the WebSocket connection:
 
 ```javascript
-// 1. Acquire camera stream (or screen share via getDisplayMedia)
-const stream = await navigator.mediaDevices.getUserMedia({
+geminiLive.stopRecording();
+```
+
+**Description:**
+- **`geminiLive.stopRecording(stopTracks = true)`**: Disconnects the internal `AudioContext` and processing nodes, and automatically calls `track.stop()` on the microphone hardware tracks to turn off the browser's mic indicator.
+- The WebSocket connection remains active, allowing the model to finish speaking or await future input.
+
+---
+
+#### iii. Connect and Stream Camera Video
+
+Acquire webcam access and hand the stream to the wrapper. The wrapper automatically creates an internal canvas, scales frames down for low latency, encodes to JPEG, and sends frames at ~1 FPS:
+
+```javascript
+// 1. Acquire camera stream
+const cameraStream = await navigator.mediaDevices.getUserMedia({
     video: {
         width: { ideal: 640 },
         height: { ideal: 480 },
@@ -274,18 +287,13 @@ const stream = await navigator.mediaDevices.getUserMedia({
     }
 });
 
-// 2. Hand the stream to the wrapper — the wrapper handles everything else!
-geminiLive.startVideoStream(stream);
-
-// Optional: listen when the user stops screen sharing from browser UI
-geminiLive.onVideoStreamEnded = () => {
-    console.log('Video stream ended');
-};
+// 2. Hand stream to the wrapper
+geminiLive.startVideoStream(cameraStream);
 ```
 
 **Description:**
 - **`geminiLive.startVideoStream(stream, options?)`**:
-  - `stream`: Any active `MediaStream` (from `getUserMedia` or `getDisplayMedia`).
+  - `stream`: Active `MediaStream` from `getUserMedia`.
   - `options` (optional):
     - `fps`: Frame rate (default: `1` FPS, optimal for Gemini Live).
     - `maxWidth`: Maximum resolution width before downscaling (default: `640` px).
@@ -295,25 +303,46 @@ geminiLive.onVideoStreamEnded = () => {
 
 ---
 
-### Step 8: Stop Streaming Audio & Video
+#### iv. Connect and Stream Screen Share
 
-Pause or stop audio and video streams cleanly.
+Share your screen or an application window using standard `getDisplayMedia`:
 
 ```javascript
-// Stop audio recording
-geminiLive.stopRecording();
+// 1. Acquire screen share stream
+const screenStream = await navigator.mediaDevices.getDisplayMedia({
+    video: { cursor: 'always' }
+});
 
-// Stop video streaming (stops frame sampling and releases hardware tracks)
+// 2. Hand stream to the wrapper
+geminiLive.startVideoStream(screenStream);
+
+// Optional: listen when the user stops screen sharing from browser UI
+geminiLive.onVideoStreamEnded = () => {
+    console.log('Screen sharing ended');
+};
+```
+
+**Description:**
+- Uses the same `startVideoStream()` method to stream your screen to Gemini.
+- `onVideoStreamEnded`: Fired automatically when the user clicks the browser's native "Stop sharing" button.
+
+---
+
+#### v. Disconnect Video / Screen Stream
+
+Stop video capture and release camera or screen sharing hardware:
+
+```javascript
 geminiLive.stopVideoStream();
 ```
 
 **Description:**
-- **`geminiLive.stopVideoStream(stopTracks = true)`**: Clears the internal timer, unhooks track listeners, and releases media device hardware tracks.
+- **`geminiLive.stopVideoStream(stopTracks = true)`**: Clears the frame sampling timer, cleans up internal video/canvas elements, and automatically calls `track.stop()` on the video tracks to turn off camera indicators.
 - Leaves the WebSocket session alive so the assistant can continue conversing.
 
 ---
 
-### Step 9: Disconnect the Session
+### Step 6: Disconnect the Session
 
 Gracefully terminate the entire live session when finished.
 
@@ -323,7 +352,7 @@ geminiLive.disconnect();
 
 **Description:**
 - Signals explicit user disconnection (`code 1000`).
-- Stops active recording, halts audio playback, cleans up timers, and closes the WebSocket connection.
+- Stops active audio recording (`stopRecording()`), stops active video streaming (`stopVideoStream()`), halts audio output playback, cleans up active timers, and closes the WebSocket connection.
 
 ---
 
@@ -340,3 +369,4 @@ geminiLive.sendText("Hello Gemini! Can you hear me?");
 ## License
 
 ISC
+
