@@ -619,7 +619,7 @@ export class GeminiLive {
     await this.audioRecorder.startRecording(stream, this.websocket);
   }
 
-  public stopRecording() {
-    this.audioRecorder.stopRecording();
+  public stopRecording(stopTracks: boolean = true) {
+    this.audioRecorder.stopRecording(stopTracks);
   }
 }

@@ -99,7 +99,7 @@ export class AudioRecorder {
         }
     }
 
-    public stopRecording() {
+    public stopRecording(stopTracks: boolean = true) {
         this.isPushing = false;
         if (this.processor) {
             this.processor.disconnect();
@@ -108,6 +108,12 @@ export class AudioRecorder {
         if (this.recordContext) {
             this.recordContext.close();
             this.recordContext = undefined;
+        }
+        if (this.mediaStream) {
+            if (stopTracks) {
+                this.mediaStream.getTracks().forEach((track) => track.stop());
+            }
+            this.mediaStream = undefined;
         }
     }
 }
